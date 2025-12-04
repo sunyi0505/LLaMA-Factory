@@ -25,6 +25,7 @@ from transformers import (
     AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
+    AutoModelForImageTextToText
 )
 from trl import AutoModelForCausalLMWithValueHead
 
@@ -35,6 +36,7 @@ from .model_utils.ktransformers import load_kt_pretrained_model
 from .model_utils.liger_kernel import apply_liger_kernel
 from .model_utils.misc import register_autoclass
 from .model_utils.mod import convert_pretrained_model_to_mod, load_mod_pretrained_model
+from .model_utils.sequence_parallel import apply_sequence_parallel
 from .model_utils.unsloth import load_unsloth_pretrained_model
 from .model_utils.valuehead import load_valuehead_params
 from .patcher import patch_config, patch_model, patch_processor, patch_tokenizer, patch_valuehead_model
@@ -140,7 +142,18 @@ def load_model(
     init_kwargs = _get_init_kwargs(model_args)
     config = load_config(model_args)
     patch_config(config, tokenizer, model_args, init_kwargs, is_trainable)
+    if (
+        model_args.sequence_parallel_size > 1
+        and hasattr(config, "attention_dropout")
+        and config.attention_dropout != 0.0
+    ):
+        logger.warning_rank0(
+            "When using sequence parallelism, it is recommended to set `attention_dropout` to 0.0 to avoid randomness issues."
+        )
+        config.attention_dropout = 0.0
     apply_liger_kernel(config, model_args, is_trainable, require_logits=(finetuning_args.stage not in ["pt", "sft"]))
+    sequence_parallel_group = apply_sequence_parallel(model_args, config,
+                                                      full_determinism=True)
 
     model = None
     lazy_load = False
@@ -239,4 +252,5 @@ def load_model(
         for name, param in model.named_parameters():
             print(f"name: {name}, dtype: {param.dtype}, device: {param.device}, trainable: {param.requires_grad}")
 
+    model.sequence_parallel_group = sequence_parallel_group
     return model
