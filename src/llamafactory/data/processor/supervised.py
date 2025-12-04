@@ -107,6 +107,7 @@ class SupervisedDatasetProcessor(DatasetProcessor):
             )
             model_inputs["input_ids"].append(input_ids)
             model_inputs["attention_mask"].append([1] * len(input_ids))
+            model_inputs["position_ids"].append(list(range(len(input_ids))))
             model_inputs["labels"].append(labels)
             model_inputs["images"].append(examples["_images"][i])
             model_inputs["videos"].append(examples["_videos"][i])
@@ -120,6 +121,7 @@ class SupervisedDatasetProcessor(DatasetProcessor):
         print("inputs:\n{}".format(self.tokenizer.decode(example["input_ids"], skip_special_tokens=False)))
         print("label_ids:\n{}".format(example["labels"]))
         print(f"labels:\n{self.tokenizer.decode(valid_labels, skip_special_tokens=False)}")
+        print("position_ids:\n{}".format(example["position_ids"]))
 
 
 @dataclass

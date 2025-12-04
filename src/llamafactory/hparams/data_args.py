@@ -111,6 +111,10 @@ class DataArguments:
         default=False,
         metadata={"help": "Enable sequence packing without cross-attention."},
     )
+    shuffle_for_sequence_parallel: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to shuffle the dataset before sequence parallel processing."},
+    )
     tool_format: Optional[str] = field(
         default=None,
         metadata={"help": "Tool format to use for constructing function calling examples."},

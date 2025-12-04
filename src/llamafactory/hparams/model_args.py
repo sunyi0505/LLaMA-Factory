@@ -138,6 +138,14 @@ class BaseModelArguments:
         default=False,
         metadata={"help": "Whether or not to enable liger kernel for faster training."},
     )
+    sequence_parallel_size: int = field(
+        default=1,
+        metadata={"help": "The sequence parallel size for sequence parallel training."},
+    )
+    sequence_parallel_mode: Literal["ulysses"] = field(
+        default="ulysses",
+        metadata={"help": "The sequence parallel mode for sequence parallel training."},
+    )
     moe_aux_loss_coef: Optional[float] = field(
         default=None,
         metadata={"help": "Coefficient of the auxiliary router loss in mixture-of-experts model."},
