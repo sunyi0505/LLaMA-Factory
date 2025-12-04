@@ -16,7 +16,7 @@ import os
 from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import numpy as np
-from datasets import Dataset, load_dataset, load_from_disk
+from datasets import Dataset, load_dataset, load_from_disk, DatasetDict
 
 from ..extras import logging
 from ..extras.constants import FILEEXT2TYPE
@@ -32,6 +32,7 @@ from .processor import (
     SupervisedDatasetProcessor,
     UnsupervisedDatasetProcessor,
 )
+from .preprocess import get_sequence_parallel_preprocess
 
 
 if TYPE_CHECKING:
@@ -272,6 +273,39 @@ def _get_preprocessed_dataset(
 
     return dataset
 
+def _get_sequence_parallel_dataset(
+    dataset: Optional[Union["Dataset", "IterableDataset"]],
+    data_args: "DataArguments",
+    model_args: "ModelArguments",
+    training_args: "Seq2SeqTrainingArguments",
+    tokenizer: "PreTrainedTokenizer",
+    is_eval: bool = False,
+) -> Optional[Union["Dataset", "IterableDataset"]]:
+    if data_args.shuffle_for_sequence_parallel:
+        dataset = dataset.shuffle(seed=training_args.seed)
+    kwargs = dict(
+        num_proc=data_args.preprocessing_num_workers,
+        load_from_cache_file=(not data_args.overwrite_cache) or (training_args.local_process_index != 0),
+        desc="Running sequence parallel preprocess on dataset",
+    )
+    pad_sequence_func = get_sequence_parallel_preprocess(
+        data_args=data_args, model_args=model_args, stage="pad", tokenizer=tokenizer
+    )
+    padded_dataset = dataset.map(
+        pad_sequence_func, batched=True, batch_size=data_args.preprocessing_batch_size, **kwargs
+    )
+    kwargs = dict(
+        num_proc=data_args.preprocessing_num_workers,
+        load_from_cache_file=(not data_args.overwrite_cache) or (training_args.local_process_index != 0),
+        desc="Running sequence parallel split on dataset",
+    )
+    sp_dataset_func = get_sequence_parallel_preprocess(
+        data_args=data_args, model_args=model_args, stage="split", tokenizer=tokenizer
+    )
+    sp_dataset = padded_dataset.map(
+        sp_dataset_func, batched=True, batch_size=data_args.preprocessing_batch_size, **kwargs
+    )
+    return sp_dataset
 
 def get_dataset(
     template: "Template",
@@ -323,8 +357,35 @@ def get_dataset(
             eval_dataset = _get_preprocessed_dataset(
                 eval_dataset, data_args, training_args, stage, template, tokenizer, processor, is_eval=True
             )
+        
+        if model_args.sequence_parallel_size > 1:
+            dataset = _get_sequence_parallel_dataset(
+                dataset, data_args, model_args, training_args, tokenizer, is_eval=False
+            )
+            if eval_dataset is not None:
+                eval_dataset = _get_sequence_parallel_dataset(
+                    eval_dataset, data_args, model_args, training_args, tokenizer, is_eval=True
+                )
+        if data_args.val_size > 1e-6:
+            dataset_dict = split_dataset(dataset, data_args, seed=training_args.seed)
+        else:
+            dataset_dict = {}
+            if dataset is not None:
+                if data_args.streaming:
+                    dataset = dataset.shuffle(buffer_size=data_args.buffer_size, seed=training_args.seed)
+                
+                dataset_dict["train"] = dataset
+        
+            if eval_dataset is not None:
+                if isinstance(eval_dataset, dict):
+                    dataset_dict.update({f"validation_{name}": data for name, data in eval_dataset.items()})
+                else:
+                    if data_args.streaming:
+                        eval_dataset = eval_dataset.shuffle(buffer_size=data_args.buffer_size, seed=training_args.seed)
+                    
+                    dataset_dict["validation"] = eval_dataset
+            dataset_dict = DatasetDict(dataset_dict)
 
-        dataset_dict = split_dataset(dataset, eval_dataset, data_args, seed=training_args.seed)
         if data_args.tokenized_path is not None:  # save tokenized dataset to disk
             if training_args.should_save:
                 dataset_dict.save_to_disk(data_args.tokenized_path)

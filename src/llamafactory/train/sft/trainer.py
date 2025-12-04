@@ -22,8 +22,13 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 import numpy as np
 import torch
+import torch.distributed as dist
+from torch.nn import CrossEntropyLoss
+from torch.utils.data import SequentialSampler
+from transformers.trainer import _is_peft_model
 from transformers import Seq2SeqTrainer
 from typing_extensions import override
+import torch.nn as nn
 
 from ...extras import logging
 from ...extras.constants import IGNORE_INDEX
@@ -106,15 +111,48 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         return super().create_scheduler(num_training_steps, optimizer)
 
     @override
-    def _get_train_sampler(self, *args, **kwargs) -> Optional["torch.utils.data.Sampler"]:
-        if self.finetuning_args.disable_shuffling:
-            return torch.utils.data.SequentialSampler(self.train_dataset)
+    def _get_train_sampler(self, dataset, *args, **kwargs) -> Optional["torch.utils.data.Sampler"]:
+        if self.finetuning_args.disable_shuffling or self.model.sequence_parallel_group is not None:
+            return torch.utils.data.SequentialSampler(dataset)
 
         return super()._get_train_sampler(*args, **kwargs)
 
     @override
     def compute_loss(self, model, inputs, *args, **kwargs):
-        return super().compute_loss(model, inputs, *args, **kwargs)
+        if not hasattr(model, "sequence_parallel_group") or model.sequence_parallel_group is None:
+            loss, _ = super().compute_loss(model, inputs, return_outputs=False *args, **kwargs)
+        else:
+            _, outputs = super().compute_loss(model, inputs, return_outputs=True *args, **kwargs)
+            loss_fct = CrossEntropyLoss(reduction="sum")
+            logits, labels = outputs["logits"] if isinstance(outputs, dict) else outputs[1], inputs["labels"]
+            logits = logits.float()
+
+            labels = nn.functional.pad(labels, (0, 1), value=loss_fct.ignore_index)
+            labels = labels[..., 1:].contiguous()
+
+            unwrapped_model = self.accelerator.unwrap_model(model)
+            if _is_peft_model(unwrapped_model):
+                vocab_size = unwrapped_model.base_model.model.config.vocab_size
+            else:
+                vocab_size = unwrapped_model.config.vocab_size
+            logits = logits.view(-1, vocab_size)
+            labels = labels.view(-1)
+
+            labels = labels.to(logits.device)
+            loss = loss_fct(logits, labels)
+
+            sp_group = model.sequence_parallel_group
+            loss = dist.nn.all_reduce(loss, op=dist.ReduceOp.SUM, group=sp_group)
+
+            if self.args.gradient_accumulation_steps > 1:
+                num_items_in_batch = kwargs["num_items_in_batch"]
+                label_num = dist.nn.all_reduce(num_items_in_batch, op=dist.ReduceOp.SUM, group=sp_group)
+            else:
+                label_num = (labels != loss_fct.ignore_index).sum()
+                label_num = dist.nn.all_reduce(label_num, op=dist.ReduceOp.SUM, group=sp_group)
+
+            loss /= label_num
+        return loss
 
     @override
     def prediction_step(

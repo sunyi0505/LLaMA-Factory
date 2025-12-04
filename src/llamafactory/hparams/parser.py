@@ -361,6 +361,18 @@ def get_train_args(args: Optional[Union[dict[str, Any], list[str]]] = None) -> _
 
     if data_args.neat_packing and is_transformers_version_greater_than("4.53.0"):
         raise ValueError("Neat packing is incompatible with transformers>=4.53.0.")
+    
+    if data_args.cutoff_len % model_args.sequence_parallel_size != 0:
+        raise ValueError("cutoff_len must be divisible by sequence_parallel_size.")
+
+    if model_args.sequence_parallel_size > 1:
+        if (data_args.cutoff_len // model_args.sequence_parallel_size) % 8 != 0:
+            tmp_sp_len = data_args.cutoff_len // model_args.sequence_parallel_size
+            closest_cutoff_len = int(tmp_sp_len + (8 - tmp_sp_len % 8)) * model_args.sequence_parallel_size
+            logger.warning_rank0(
+                f"To better utilize sequence parallelism, we recommend setting `cutoff_len` to {closest_cutoff_len}."
+            )
+            data_args.cutoff_len = closest_cutoff_len
 
     _set_env_vars()
     _verify_model_args(model_args, data_args, finetuning_args)

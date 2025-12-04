@@ -117,6 +117,14 @@ def split_dataset(
 
     return DatasetDict(dataset_dict)
 
+# modified from https://github.com/jzhang38/EasyContext/
+def preprocess_sp_dataset(seq_ids, world_size, sequence_parallel_mode):
+    if sequence_parallel_mode == 'ulysses':
+        step = len(seq_ids) // world_size
+        local_values = [seq_ids[s : s + step] for s in range(0, len(seq_ids), step)]
+        return local_values
+    else:
+        raise NotImplementedError('Other sequence parallel modes are to be implemented.')
 
 def get_dataset_module(dataset: Union["Dataset", "DatasetDict"]) -> "DatasetModule":
     r"""Convert dataset or dataset dict to dataset module."""
