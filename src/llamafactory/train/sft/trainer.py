@@ -112,6 +112,9 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
     @override
     def compute_loss(self, model, inputs, *args, **kwargs):
+        from llamafactory.v1.plugins.model_plugins.ulysses.sequence_parallel import SequenceParallelLossPlugin
+        if hasattr(model.module, "sequence_parallel_group") and model.module.sequence_parallel_group:
+            return SequenceParallelLossPlugin('sequence_parallel_loss')(model.module, inputs, *args, **kwargs)
         return super().compute_loss(model, inputs, *args, **kwargs)
 
     @override

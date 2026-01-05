@@ -50,7 +50,10 @@ def run_sft(
     tokenizer = tokenizer_module["tokenizer"]
     template = get_template_and_fix_tokenizer(tokenizer, data_args)
     dataset_module = get_dataset(template, model_args, data_args, training_args, stage="sft", **tokenizer_module)
+    from llamafactory.v1.plugins.model_plugins.ulysses.sequence_parallel import SequenceParallelModelPlugin
+    sp_group = SequenceParallelModelPlugin('apply_sequence_parallel')(model_args)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
+    model.sequence_parallel_group = sp_group
 
     if getattr(model, "is_quantized", False) and not training_args.do_train:
         setattr(model, "_hf_peft_config_loaded", True)  # hack here: make model compatible with prediction

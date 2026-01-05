@@ -45,6 +45,10 @@ class TrainingArguments:
         default=None,
         metadata={"help": "Distribution configuration for training."},
     )
+    gradient_accumulation_steps: int = field(
+        default=1,
+        metadata={"help": "gradient_accumulation_steps."},
+    )
 
     def __post_init__(self) -> None:
         self.dist_config = get_plugin_config(self.dist_config)
