@@ -1,0 +1,149 @@
+from functools import partial
+import torch
+from llamafactory.v1.utils.plugin import BasePlugin
+from llamafactory.v1.config.model_args import ModelArguments
+import torch.distributed as dist
+import transformers
+from transformers import AutoModelForCausalLM
+from llamafactory.v1.plugins.model_plugins.ulysses.ulysses import UlyssesAttention
+import torch.distributed as dist
+from torch.nn import CrossEntropyLoss
+import torch.nn as nn
+
+
+class SequenceParallelModelPlugin(BasePlugin):
+    def __call__(self, model_args, full_determinism=False):
+        return super().__call__(model_args, full_determinism=full_determinism)
+    
+
+class SequenceParallelLossPlugin(BasePlugin):
+    def __call__(self, model, inputs, *args, **kwargs):
+        return super().__call__(model, inputs, *args, **kwargs)
+
+def new_flash_attn_forward(
+    query_states,
+    key_states,
+    value_states,
+    attention_mask,
+    sequence_parallel_size=1,
+    dropout=0,
+    deterministic=False,
+    is_causal=True,
+    group=None,
+    mode="ulysses",
+    attn_fn=None,
+    **kwargs,
+):
+    if mode == "ulysses":
+        dist_attn = UlyssesAttention(sequence_process_group=group, attn_fn=attn_fn)
+        attn_output = dist_attn(query_states, key_states, value_states, attention_mask,
+                                query_length=query_states.shape[1] * sequence_parallel_size, deterministic=deterministic, dropout_p=dropout, causal=is_causal)
+    else:
+        raise NotImplementedError('Other sequence parallel modes are to be implemented.')
+
+    return attn_output
+
+
+def init_sp_group(sp_size):
+    assert dist.is_initialized()
+    world_size = dist.get_world_size()
+    assert world_size % sp_size == 0, "Total number of GPUs must be a multiple of sequence_parallel_size."
+
+    sp_group_num = world_size // sp_size
+    sp_ranks_list = [list(range(i * sp_size, i * sp_size + sp_size)) for i in range(sp_group_num)]
+
+    sp_groups = [dist.new_group(sp_ranks_this) for sp_ranks_this in sp_ranks_list]
+
+    global_rank_this = dist.get_rank()
+    sp_idx = global_rank_this // sp_size
+    return sp_groups[sp_idx]
+
+@SequenceParallelModelPlugin('apply_sequence_parallel').register
+def apply_sequence_parallel(model_args, full_determinism=False):
+    if model_args.sequence_parallel_size == 1:
+        return None  # no sequence parallelism
+    
+    # init sequence-parallel groups here
+    group_this = init_sp_group(model_args.sequence_parallel_size)
+    original_attn = transformers.modeling_flash_attention_utils._flash_attention_forward
+
+    try:
+        # old_flash_attention_forward = transformers.modeling_flash_attention_utils._flash_attention_forward
+        if model_args.sequence_parallel_mode == 'ulysses':
+            new_flash_attention_forward = partial(new_flash_attn_forward, group=group_this, mode=model_args.sequence_parallel_mode, deterministic=full_determinism, attn_fn=original_attn, sequence_parallel_size=model_args.sequence_parallel_size)
+            # assert check_params(old_flash_attention_forward, new_flash_attention_forward)
+        else:
+            raise NotImplementedError('Other sequence parallel modes are to be implemented.')
+        
+        # monkey patching
+        transformers.modeling_flash_attention_utils._flash_attention_forward = new_flash_attention_forward
+    except:
+        raise ValueError(
+            f"The current transformer version {transformers.__version__} is not supported. "
+        )
+
+    return group_this
+
+@SequenceParallelLossPlugin('sequence_parallel_loss').register
+def sequence_parallel_loss(model, inputs, **kwargs):
+    loss_fct = CrossEntropyLoss(reduction="sum")
+
+    outputs = model(**inputs)
+
+    logits, labels = outputs["logits"] if isinstance(outputs, dict) else outputs[1], inputs["labels"]
+
+    # shift labels
+    world_size = dist.get_world_size(model.sequence_parallel_group)
+    rank = dist.get_rank(model.sequence_parallel_group)
+    global_labels = [torch.zeros_like(labels) for _ in range(world_size)]
+    dist.all_gather(global_labels, labels, group=model.sequence_parallel_group)
+    global_labels = torch.cat(global_labels, dim=1).contiguous()
+    shifted_labels = global_labels[..., 1:].contiguous()
+    labels = torch.chunk(shifted_labels, world_size, dim=1)[rank]
+
+    logits = logits.float()
+
+    vocab_size = model.config.vocab_size
+    logits = logits.view(-1, vocab_size)
+    labels = labels.view(-1)
+
+    labels = labels.to(logits.device)
+    loss = loss_fct(logits, labels)
+
+    sp_group = model.sequence_parallel_group
+    loss = dist.nn.all_reduce(loss, op=dist.ReduceOp.SUM, group=sp_group)
+
+    if "num_items_in_batch" in kwargs:
+        num_items_in_batch = kwargs["num_items_in_batch"]
+        label_num = dist.nn.all_reduce(num_items_in_batch, op=dist.ReduceOp.SUM, group=sp_group)
+    else:
+        label_num = (labels != loss_fct.ignore_index).sum()
+        label_num = dist.nn.all_reduce(label_num, op=dist.ReduceOp.SUM, group=sp_group)
+
+    loss /= label_num
+    return loss
+
+@SequenceParallelLossPlugin('compute_loss').register
+def compute_loss(model, inputs, **kwargs):
+    loss_fct = CrossEntropyLoss(reduction="sum")
+
+    outputs = model(**inputs)
+
+    logits, labels = outputs["logits"] if isinstance(outputs, dict) else outputs[1], inputs["labels"]
+
+    logits = logits.float()
+
+    labels = nn.functional.pad(labels, (0, 1), value=loss_fct.ignore_index)
+    labels = labels[..., 1:].contiguous()
+
+    vocab_size = model.config.vocab_size
+    logits = logits.view(-1, vocab_size)
+    labels = labels.view(-1)
+
+    labels = labels.to(logits.device)
+    loss = loss_fct(logits, labels)
+
+    label_num = (labels != loss_fct.ignore_index).sum()
+
+    loss /= label_num
+    return loss

@@ -47,6 +47,14 @@ class ModelArguments:
         default=None,
         metadata={"help": "Quantization configuration for the model."},
     )
+    sequence_parallel_size: int = field(
+        default=1,
+        metadata={"help": "Sequence parallel size for the model."},
+    )
+    sequence_parallel_mode: str = field(
+        default="ulysses",
+        metadata={"help": "Sequence parallel mode for the model."},
+    )
 
     def __post_init__(self) -> None:
         self.peft_config = get_plugin_config(self.peft_config)
