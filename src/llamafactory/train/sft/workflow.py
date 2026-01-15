@@ -50,7 +50,10 @@ def run_sft(
     tokenizer = tokenizer_module["tokenizer"]
     template = get_template_and_fix_tokenizer(tokenizer, data_args)
     dataset_module = get_dataset(template, model_args, data_args, training_args, stage="sft", **tokenizer_module)
+    from llamafactory.v1.plugins.model_plugins.ulysses.sequence_parallel import SequenceParallelModelPlugin
+    sp_group = SequenceParallelModelPlugin('apply_sequence_parallel')(model_args)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
+    model.sequence_parallel_group = sp_group
 
     if getattr(model, "is_quantized", False) and not training_args.do_train:
         setattr(model, "_hf_peft_config_loaded", True)  # hack here: make model compatible with prediction
@@ -63,6 +66,7 @@ def run_sft(
         block_diag_attn=model_args.block_diag_attn,
         attn_implementation=getattr(model.config, "_attn_implementation", None),
         compute_dtype=model_args.compute_dtype,
+        require_position_ids=True if model_args.sequence_parallel_size > 1 else False,
         **tokenizer_module,
     )
 
@@ -132,7 +136,8 @@ def run_sft(
     # Training
     if training_args.do_train:
         train_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-        trainer.save_model()
+        if training_args.save_strategy != "no":
+            trainer.save_model()
         if finetuning_args.include_effective_tokens_per_second:
             train_result.metrics["effective_tokens_per_sec"] = calculate_tps(
                 dataset_module["train_dataset"], train_result.metrics, stage="sft"
@@ -140,7 +145,8 @@ def run_sft(
 
         trainer.log_metrics("train", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)
-        trainer.save_state()
+        if training_args.save_strategy != "no":
+            trainer.save_state()
         if trainer.is_world_process_zero() and finetuning_args.plot_loss:
             keys = ["loss"]
             if isinstance(dataset_module.get("eval_dataset"), dict):

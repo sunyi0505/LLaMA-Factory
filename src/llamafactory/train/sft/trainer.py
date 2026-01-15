@@ -112,15 +112,20 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
     @override
     def _get_train_sampler(self, *args, **kwargs) -> Optional["torch.utils.data.Sampler"]:
+        return torch.utils.data.SequentialSampler(self.train_dataset)
         if self.finetuning_args.disable_shuffling:
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
         return super()._get_train_sampler(*args, **kwargs)
-
+ 
     @override
     def compute_loss(self, model, inputs, *args, **kwargs):
-        return super().compute_loss(model, inputs, *args, **kwargs)
-
+        from llamafactory.v1.plugins.model_plugins.ulysses.sequence_parallel import SequenceParallelLossPlugin
+        if hasattr(model.module, "sequence_parallel_group") and model.module.sequence_parallel_group:
+            return SequenceParallelLossPlugin('sequence_parallel_loss')(model.module, inputs, *args, **kwargs)
+        else:
+            return SequenceParallelLossPlugin('compute_loss')(model.module, inputs, *args, **kwargs)
+    
     @override
     def prediction_step(
         self,

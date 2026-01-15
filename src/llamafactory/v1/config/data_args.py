@@ -26,3 +26,7 @@ class DataArguments:
         default=None,
         metadata={"help": "Path to the evaluation dataset."},
     )
+    ignore_pad_token_for_loss: bool = field(
+        default=True,
+        metadata={"help": "Whether to ignore the pad token for loss calculation."},
+    )
