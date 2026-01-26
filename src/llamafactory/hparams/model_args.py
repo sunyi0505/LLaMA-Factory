@@ -201,6 +201,14 @@ class BaseModelArguments:
         default=False,
         metadata={"help": "Whether to trust the execution of code from datasets/models defined on the Hub or not."},
     )
+    sequence_parallel_size: int = field(
+        default=1,
+        metadata={"help": "Sequence parallel size for the model."},
+    )
+    sequence_parallel_mode: str = field(
+        default="ulysses",
+        metadata={"help": "Sequence parallel mode for the model."},
+    )
 
     def __post_init__(self):
         if self.model_name_or_path is None:

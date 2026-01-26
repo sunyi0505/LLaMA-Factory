@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     from .processor import DatasetProcessor
     from .template import Template
 
+from llamafactory.v1.plugins.data_plugins.sequence_parallel import SequenceParallelDataPlugin
+
 
 logger = logging.get_logger(__name__)
 
@@ -323,6 +325,13 @@ def get_dataset(
             eval_dict[key] = _get_preprocessed_dataset(
                 eval_dict[key], data_args, training_args, stage, template, tokenizer, processor, is_eval=True
             )
+
+        if model_args.sequence_parallel_size > 1:
+            def sequence_parallel_data_processing(examples):
+                pad_data = SequenceParallelDataPlugin('pad_sequence')(examples, model_args, tokenizer, data_args)
+                return SequenceParallelDataPlugin('sp_split')(pad_data, model_args, tokenizer, data_args)
+            logger.info_rank0("ulysses sequence parallel data padding and split...")
+            train_dict['train'] = train_dict['train'].map(sequence_parallel_data_processing, batched=True, batch_size=data_args.preprocessing_batch_size)
 
         # Combine train and eval dictionaries
         dataset_dict = DatasetDict({**train_dict, **eval_dict})
