@@ -248,9 +248,15 @@ class SFTDataCollatorWith4DAttentionMask(MultiModalDataCollatorForSeq2Seq):
     block_diag_attn: bool = False
     attn_implementation: Literal["eager", "sdpa", "flash_attention_2"] = "eager"
     compute_dtype: "torch.dtype" = torch.float32
+    require_position_ids: bool = False
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, "torch.Tensor"]:
         features = super().__call__(features)
+        if self.require_position_ids and "position_ids" not in features:
+            sequence_parallel_rank = torch.distributed.get_rank(self.model.sequence_parallel_group)
+            batch_size, seq_length = features["input_ids"].shape
+            features["position_ids"] = torch.arange(seq_length * sequence_parallel_rank, seq_length * (sequence_parallel_rank + 1)).long().unsqueeze(0).repeat(batch_size, 1)
+
         if self.block_diag_attn and self.attn_implementation != "flash_attention_2":
             features["attention_mask"] = prepare_4d_attention_mask(features["attention_mask"], self.compute_dtype)
 
