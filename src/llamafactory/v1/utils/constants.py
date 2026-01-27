@@ -12,4 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from enum import Enum, unique
+
 IGNORE_INDEX = -100
+
+FILEEXT2TYPE = {
+    "arrow": "arrow",
+    "csv": "csv",
+    "json": "json",
+    "jsonl": "json",
+    "parquet": "parquet",
+    "txt": "text",
+}
+
+@unique
+class QuantizationMethod(str, Enum):
+    r"""Borrowed from `transformers.utils.quantization_config.QuantizationMethod`."""
+
+    BNB = "bnb"
+    GPTQ = "gptq"
+    AWQ = "awq"
+    AQLM = "aqlm"
+    QUANTO = "quanto"
+    EETQ = "eetq"
+    HQQ = "hqq"
+    MXFP4 = "mxfp4"
+    FP8 = "fp8"
